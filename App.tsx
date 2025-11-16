@@ -13,15 +13,16 @@ import ControlCenter from './tabs/ControlCenter';
 import Accounts from './tabs/Accounts';
 import ToastContainer from './components/ToastContainer';
 import BookingDetailModal from './components/BookingDetailModal';
+import firebaseAPI from './firebaseAPI';
 
 const App: React.FC = () => {
     const [activeTab, setActiveTab] = useState<Tab>('dashboard');
-    const [bookings, setBookings] = useState<Booking[]>(SAMPLE_BOOKINGS);
-    const [packages, setPackages] = useState<Package[]>(DEFAULT_PACKAGES);
+    const [bookings, setBookings] = useState<Booking[]>([]);
+    const [packages, setPackages] = useState<Package[]>([]);
     const [servicesConfig, setServicesConfig] = useState<ServiceConfig>(DEFAULT_SERVICES_CONFIG);
-    const [expenseCategories, setExpenseCategories] = useState<ExpenseCategory[]>(DEFAULT_EXPENSE_CATEGORIES);
-    const [vendors, setVendors] = useState<Vendor[]>(DEFAULT_VENDORS);
-    const [allExpenses, setAllExpenses] = useState<Expense[]>(SAMPLE_EXPENSES);
+    const [expenseCategories, setExpenseCategories] = useState<ExpenseCategory[]>([]);
+    const [vendors, setVendors] = useState<Vendor[]>([]);
+    const [allExpenses, setAllExpenses] = useState<Expense[]>([]);
     const [toasts, setToasts] = useState<ToastType[]>([]);
     const [currentSeason, setCurrentSeason] = useState('2025-26');
     const [bookingToEdit, setBookingToEdit] = useState<Booking | null>(null);
@@ -30,7 +31,99 @@ const App: React.FC = () => {
     const [bookingToPreselectInAccounts, setBookingToPreselectInAccounts] = useState<string | null>(null);
     const [preselectedDateForBooking, setPreselectedDateForBooking] = useState<string | null>(null);
     const [bookingFilterToPreselect, setBookingFilterToPreselect] = useState<Record<string, string> | null>(null);
+    const [isLoading, setIsLoading] = useState(true);
+    const [isInitialized, setIsInitialized] = useState(false);
 
+    // Load data from Firebase on mount
+    useEffect(() => {
+        const loadData = async () => {
+            setIsLoading(true);
+            try {
+                // Load all data from Firebase
+                const [
+                    fbBookings,
+                    fbExpenses,
+                    fbPackages,
+                    fbServicesConfig,
+                    fbCategories,
+                    fbVendors
+                ] = await Promise.all([
+                    firebaseAPI.bookings.getAll(),
+                    firebaseAPI.expenses.getAll(),
+                    firebaseAPI.packages.getAll(),
+                    firebaseAPI.servicesConfig.get(),
+                    firebaseAPI.expenseCategories.getAll(),
+                    firebaseAPI.vendors.getAll()
+                ]);
+
+                // Check if database is empty (first time)
+                const isEmpty = fbBookings.length === 0 && 
+                               fbExpenses.length === 0 && 
+                               fbPackages.length === 0 &&
+                               fbCategories.length === 0 &&
+                               fbVendors.length === 0;
+
+                if (isEmpty && !isInitialized) {
+                    console.log('📦 Initializing database with sample data...');
+                    await firebaseAPI.initializeDatabase(
+                        SAMPLE_BOOKINGS,
+                        SAMPLE_EXPENSES,
+                        DEFAULT_PACKAGES,
+                        DEFAULT_SERVICES_CONFIG,
+                        DEFAULT_EXPENSE_CATEGORIES,
+                        DEFAULT_VENDORS
+                    );
+                    setIsInitialized(true);
+                    // Reload data after initialization
+                    const [
+                        newBookings,
+                        newExpenses,
+                        newPackages,
+                        newServicesConfig,
+                        newCategories,
+                        newVendors
+                    ] = await Promise.all([
+                        firebaseAPI.bookings.getAll(),
+                        firebaseAPI.expenses.getAll(),
+                        firebaseAPI.packages.getAll(),
+                        firebaseAPI.servicesConfig.get(),
+                        firebaseAPI.expenseCategories.getAll(),
+                        firebaseAPI.vendors.getAll()
+                    ]);
+                    
+                    setBookings(newBookings);
+                    setAllExpenses(newExpenses);
+                    setPackages(newPackages);
+                    setServicesConfig(newServicesConfig || DEFAULT_SERVICES_CONFIG);
+                    setExpenseCategories(newCategories);
+                    setVendors(newVendors);
+                } else {
+                    // Use existing data
+                    setBookings(fbBookings);
+                    setAllExpenses(fbExpenses);
+                    setPackages(fbPackages);
+                    setServicesConfig(fbServicesConfig || DEFAULT_SERVICES_CONFIG);
+                    setExpenseCategories(fbCategories.length > 0 ? fbCategories : DEFAULT_EXPENSE_CATEGORIES);
+                    setVendors(fbVendors.length > 0 ? fbVendors : DEFAULT_VENDORS);
+                }
+
+                console.log('✅ Data loaded from Firebase');
+            } catch (error) {
+                console.error('❌ Error loading data:', error);
+                // Fallback to local data on error
+                setBookings(SAMPLE_BOOKINGS);
+                setAllExpenses(SAMPLE_EXPENSES);
+                setPackages(DEFAULT_PACKAGES);
+                setExpenseCategories(DEFAULT_EXPENSE_CATEGORIES);
+                setVendors(DEFAULT_VENDORS);
+                addToast('Error loading data from Firebase, using local data', 'error');
+            } finally {
+                setIsLoading(false);
+            }
+        };
+
+        loadData();
+    }, []);
 
     // Effect to auto-update booking expenses totals when allExpenses changes
     useEffect(() => {
@@ -99,7 +192,6 @@ const App: React.FC = () => {
         return Array.from(seasons).sort();
     }, [bookings]);
 
-
     const addToast = useCallback((message: string, type: ToastType['type']) => {
         const id = Date.now();
         setToasts(prevToasts => [...prevToasts, { id, message, type }]);
@@ -109,13 +201,17 @@ const App: React.FC = () => {
         setToasts(prevToasts => prevToasts.filter(toast => toast.id !== id));
     }, []);
 
-    const handleAddBooking = (newBooking: Booking) => {
+    const handleAddBooking = async (newBooking: Booking) => {
         setBookings(prev => [newBooking, ...prev]);
+        // Save to Firebase
+        await firebaseAPI.bookings.add(newBooking);
     };
 
-    const handleUpdateBooking = (updatedBooking: Booking) => {
+    const handleUpdateBooking = async (updatedBooking: Booking) => {
         setBookings(prev => prev.map(b => b.bookingId === updatedBooking.bookingId ? updatedBooking : b));
-        setBookingToEdit(null); // Clear editing state after update
+        setBookingToEdit(null);
+        // Update in Firebase
+        await firebaseAPI.bookings.update(updatedBooking.bookingId, updatedBooking);
     };
 
     const handleEditBooking = (booking: Booking) => {
@@ -129,17 +225,17 @@ const App: React.FC = () => {
     
     const handleViewBooking = (booking: Booking, focusPayment: boolean = false) => {
         setViewingBooking(booking);
-        // We can pass a prop to the modal later to auto-focus the payment section if needed
     };
     
-    const handleAddPayment = (bookingId: string, payment: Payment) => {
+    const handleAddPayment = async (bookingId: string, payment: Payment) => {
         setBookings(prev => prev.map(b => {
             if (b.bookingId === bookingId) {
                 const updatedBooking = { ...b, payments: [...b.payments, payment] };
-                // Also update the viewingBooking if it's the one being changed
                 if (viewingBooking?.bookingId === bookingId) {
                     setViewingBooking(updatedBooking);
                 }
+                // Update in Firebase
+                firebaseAPI.bookings.update(bookingId, updatedBooking);
                 return updatedBooking;
             }
             return b;
@@ -147,13 +243,15 @@ const App: React.FC = () => {
         addToast(`Payment of ₹${payment.amount.toLocaleString('en-IN')} added successfully!`, 'success');
     };
 
-    const handleRevertPayment = (bookingId: string, payment: Payment) => {
+    const handleRevertPayment = async (bookingId: string, payment: Payment) => {
         setBookings(prev => prev.map(b => {
             if (b.bookingId === bookingId) {
                 const updatedBooking = { ...b, payments: [...b.payments, payment] };
                 if (viewingBooking?.bookingId === bookingId) {
                     setViewingBooking(updatedBooking);
                 }
+                // Update in Firebase
+                firebaseAPI.bookings.update(bookingId, updatedBooking);
                 return updatedBooking;
             }
             return b;
@@ -161,8 +259,11 @@ const App: React.FC = () => {
         addToast(`Payment of ₹${payment.amount.toLocaleString('en-IN')} reverted successfully.`, 'warning');
     };
     
-    const handleAddExpense = (expense: Expense, newVendorCategoryId?: string) => {
+    const handleAddExpense = async (expense: Expense, newVendorCategoryId?: string) => {
         setAllExpenses(prev => [...prev, expense]);
+        // Save to Firebase
+        await firebaseAPI.expenses.add(expense);
+        
         // Check if vendor is new
         if (!vendors.some(v => v.name.toLowerCase() === expense.vendor.toLowerCase())) {
             const newVendor: Vendor = {
@@ -171,13 +272,15 @@ const App: React.FC = () => {
                 categoryId: newVendorCategoryId || expenseCategories.find(c => c.name === 'Other')?.id || 'other',
             };
             setVendors(prev => [...prev, newVendor]);
+            await firebaseAPI.vendors.add(newVendor);
             addToast(`New vendor "${expense.vendor}" added to category.`, 'info');
         }
         addToast('Expense added successfully!', 'success');
     };
     
-    const handleRevertExpense = (revertedExpense: Expense) => {
+    const handleRevertExpense = async (revertedExpense: Expense) => {
         setAllExpenses(prev => [...prev, revertedExpense]);
+        await firebaseAPI.expenses.add(revertedExpense);
         addToast(`Expense of ₹${revertedExpense.amount.toLocaleString('en-IN')} reverted successfully.`, 'warning');
     };
 
@@ -202,6 +305,17 @@ const App: React.FC = () => {
     };
 
     const renderContent = () => {
+        if (isLoading) {
+            return (
+                <div className="flex items-center justify-center min-h-[400px]">
+                    <div className="text-center">
+                        <div className="inline-block animate-spin rounded-full h-12 w-12 border-b-2 border-[#cd853f]"></div>
+                        <p className="mt-4 text-gray-600">Loading data from Firebase...</p>
+                    </div>
+                </div>
+            );
+        }
+
         switch (activeTab) {
             case 'dashboard':
                 return <Dashboard bookings={bookings} allExpenses={allExpenses} currentSeason={currentSeason} setActiveTab={setActiveTab} onViewBooking={handleViewBooking} />;
